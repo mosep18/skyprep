@@ -1,5 +1,5 @@
 /* SkyPrep service worker – offline-first app shell, stale-while-revalidate */
-const VERSION = 'skyprep-v1.0.5';
+const VERSION = 'skyprep-v1.0.6';
 const SHELL = [
   './', './index.html', './manifest.webmanifest',
   './css/app.css', './js/i18n.js', './js/app.js', './data/questions.js',

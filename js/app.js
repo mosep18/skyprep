@@ -2,8 +2,11 @@
 (() => {
   'use strict';
 
-  const VERSION = '1.0.5';
+  const VERSION = '1.0.6';
   const LS_KEY = 'skyprep.v1';
+  const LS_STAMP_KEY = 'skyprep.savedAt';
+  const STORAGE_DB = 'skyprep-storage';
+  const STORAGE_STORE = 'snapshots';
   const TARGET = 75;               // target percentage shown on results
   const MOCK_DEFAULT = 100;
 
@@ -80,23 +83,175 @@
   function guessLang() {
     try { const l = (navigator.language || 'fa').toLowerCase(); return l.startsWith('en') ? 'en' : 'fa'; } catch (e) { return 'fa'; }
   }
-  function load() {
+  let localStateExists = false;
+  let localStateValid = true;
+  let lastSavedAt = 0;
+  let stateDbPromise = null;
+  let idbSaveQueue = Promise.resolve();
+
+  function mergeState(r) {
     const d = defaults();
-    try {
-      const r = JSON.parse(localStorage.getItem(LS_KEY) || 'null');
-      if (r && typeof r === 'object') {
-        return { ...d, ...r, settings: { ...d.settings, ...(r.settings || {}) } };
-      }
-    } catch (e) { /* ignore */ }
-    return d;
+    if (!r || typeof r !== 'object' || Array.isArray(r)) return d;
+    return {
+      ...d, ...r,
+      settings: { ...d.settings, ...(r.settings && typeof r.settings === 'object' ? r.settings : {}) },
+      history: Array.isArray(r.history) ? r.history : [],
+      qstats: r.qstats && typeof r.qstats === 'object' && !Array.isArray(r.qstats) ? r.qstats : {},
+      marks: Array.isArray(r.marks) ? r.marks : [],
+      session: r.session && typeof r.session === 'object' ? r.session : null
+    };
   }
+
+  function load() {
+    try {
+      const raw = localStorage.getItem(LS_KEY);
+      localStateExists = raw !== null;
+      lastSavedAt = Math.max(0, Number(localStorage.getItem(LS_STAMP_KEY)) || 0);
+      if (raw === null) return defaults();
+      const r = JSON.parse(raw);
+      if (r && typeof r === 'object' && !Array.isArray(r)) {
+        const embeddedStamp = Math.max(0, Number(r.__skyprepSavedAt) || 0);
+        lastSavedAt = Math.max(lastSavedAt, embeddedStamp);
+        const { __skyprepSavedAt, ...stateData } = r;
+        return mergeState(stateData);
+      }
+      localStateValid = false;
+    } catch (e) {
+      localStateValid = false;
+    }
+    return defaults();
+  }
+
   let S = load();
   let warned = false;
+  let recoveredStorage = false;
+
+  function openStateDb() {
+    if (stateDbPromise) return stateDbPromise;
+    stateDbPromise = new Promise((resolve, reject) => {
+      if (!window.indexedDB) { reject(new Error('IndexedDB is unavailable')); return; }
+      let req;
+      try { req = indexedDB.open(STORAGE_DB, 1); }
+      catch (e) { reject(e); return; }
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(STORAGE_STORE)) db.createObjectStore(STORAGE_STORE);
+      };
+      req.onsuccess = () => {
+        const db = req.result;
+        db.onversionchange = () => db.close();
+        resolve(db);
+      };
+      req.onerror = () => reject(req.error || new Error('Could not open IndexedDB'));
+      req.onblocked = () => reject(new Error('IndexedDB upgrade is blocked'));
+    });
+    return stateDbPromise;
+  }
+
+  async function readStateSnapshot() {
+    const db = await openStateDb();
+    return new Promise((resolve, reject) => {
+      let tx;
+      try { tx = db.transaction(STORAGE_STORE, 'readonly'); }
+      catch (e) { reject(e); return; }
+      const req = tx.objectStore(STORAGE_STORE).get('main');
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => reject(req.error || new Error('Could not read IndexedDB snapshot'));
+      tx.onabort = () => reject(tx.error || new Error('IndexedDB read was aborted'));
+    });
+  }
+
+  async function writeStateSnapshot(snapshot) {
+    const db = await openStateDb();
+    return new Promise((resolve, reject) => {
+      let tx;
+      try {
+        tx = db.transaction(STORAGE_STORE, 'readwrite');
+        tx.objectStore(STORAGE_STORE).put(snapshot, 'main');
+      } catch (e) { reject(e); return; }
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => reject(tx.error || new Error('Could not write IndexedDB snapshot'));
+      tx.onabort = () => reject(tx.error || new Error('IndexedDB write was aborted'));
+    });
+  }
+
+  function queueStateSnapshot(snapshot) {
+    idbSaveQueue = idbSaveQueue.catch(() => {}).then(() => writeStateSnapshot(snapshot));
+    return idbSaveQueue;
+  }
+
+  function mirrorSnapshotToLocal(snapshot) {
+    try {
+      const localData = { ...snapshot.data, __skyprepSavedAt: snapshot.savedAt };
+      localStorage.setItem(LS_KEY, JSON.stringify(localData));
+      localStorage.setItem(LS_STAMP_KEY, String(snapshot.savedAt));
+      return true;
+    } catch (e) { return false; }
+  }
+
+  function reportSaveFailure() {
+    if (warned) return;
+    warned = true;
+    if (typeof toast === 'function') toast(t('save_fail'));
+  }
+
   function save() {
-    try { localStorage.setItem(LS_KEY, JSON.stringify(S)); }
-    catch (e) {
-      if (!warned && typeof toast === 'function') { warned = true; toast(t('save_fail')); }
+    const savedAt = Math.max(Date.now(), lastSavedAt + 1);
+    lastSavedAt = savedAt;
+    let serialized;
+    try { serialized = JSON.stringify(S); }
+    catch (e) { reportSaveFailure(); return Promise.resolve(false); }
+
+    let localSaved = false;
+    try {
+      // Embed the timestamp in the same value so state and revision cannot
+      // become separated if Android terminates the app between two writes.
+      const localData = { ...JSON.parse(serialized), __skyprepSavedAt: savedAt };
+      localStorage.setItem(LS_KEY, JSON.stringify(localData));
+      localSaved = true;
+      try { localStorage.setItem(LS_STAMP_KEY, String(savedAt)); } catch (e) { /* Embedded timestamp is authoritative. */ }
+    } catch (e) { /* Try the independent IndexedDB copy below. */ }
+
+    const snapshot = { format: 1, savedAt, data: JSON.parse(serialized) };
+    return queueStateSnapshot(snapshot).catch((e) => {
+      if (!localSaved) reportSaveFailure();
+      return false;
+    });
+  }
+
+  async function restorePersistedState() {
+    let snapshot = null;
+    try { snapshot = await readStateSnapshot(); }
+    catch (e) { /* localStorage remains the first fallback. */ }
+
+    const snapshotTime = snapshot && Number(snapshot.savedAt) || 0;
+    const hasSnapshotData = snapshot && snapshot.data && typeof snapshot.data === 'object';
+    if (hasSnapshotData && (!localStateValid || !localStateExists || snapshotTime > lastSavedAt)) {
+      S = mergeState(snapshot.data);
+      lastSavedAt = snapshotTime || Date.now();
+      recoveredStorage = true;
+      mirrorSnapshotToLocal({ savedAt: lastSavedAt, data: S });
+      localStateValid = true;
+      localStateExists = true;
+      return true;
     }
+
+    // Migrate existing installations from localStorage-only storage to the
+    // independent IndexedDB snapshot without changing the user's data.
+    if (localStateValid && localStateExists && (!snapshot || lastSavedAt >= snapshotTime)) {
+      await save();
+    }
+    return false;
+  }
+
+  async function requestPersistentStorage() {
+    try {
+      if (navigator.storage && typeof navigator.storage.persist === 'function') {
+        const alreadyPersistent = typeof navigator.storage.persisted === 'function'
+          ? await navigator.storage.persisted() : false;
+        if (!alreadyPersistent) await navigator.storage.persist();
+      }
+    } catch (e) { /* Persistence permission is best-effort; IndexedDB still works. */ }
   }
 
   const ui = {
@@ -344,8 +499,11 @@
   }
 
   let ticker = null;
+  let lastTickerSaveBucket = -1;
   function startTicker() {
     stopTicker();
+    const currentSession = S.session;
+    lastTickerSaveBucket = currentSession ? Math.floor((currentSession.spent || 0) / 5) : -1;
     ticker = setInterval(() => {
       const se = S.session; if (!se || route().name !== 'quiz') return;
       se.spent = Math.max(0, Math.floor((Date.now() - (se.t0 || Date.now())) / 1000));
@@ -358,7 +516,11 @@
           if (left <= 0) { toast(t('time_up')); finishSession(); return; }
         } else el.textContent = clock(se.spent);
       }
-      if (se.spent % 5 === 0) save();
+      const saveBucket = Math.floor(se.spent / 5);
+      if (saveBucket > lastTickerSaveBucket) {
+        lastTickerSaveBucket = saveBucket;
+        save();
+      }
     }, 1000);
   }
   function stopTicker() { if (ticker) { clearInterval(ticker); ticker = null; } }
@@ -799,7 +961,32 @@
     for (const [k, v] of Object.entries(d.qstats)) if (DB.byId.has(Number(k)) && v && typeof v === 'object') out.qstats[k] = { c: num(v.c), w: num(v.w), s: num(v.s), last: v.last === 0 || v.last === 1 ? v.last : null };
     out.marks = Array.isArray(d.marks) ? d.marks.filter((x) => DB.byId.has(x)) : [];
     const s = d.settings || {};
-    out.settings = { lang: s.lang === 'en' ? 'en' : 'fa', theme: ['auto', 'light', 'dark'].includes(s.theme) ? s.theme : 'auto', instant: !!s.instant };
+    out.settings = { ...out.settings, lang: s.lang === 'en' ? 'en' : 'fa', theme: ['auto', 'light', 'dark'].includes(s.theme) ? s.theme : 'auto', instant: !!s.instant, hideIntro: !!s.hideIntro };
+
+    // Keep an in-progress quiz when importing a backup. Older versions
+    // exported the session but silently discarded it during sanitization.
+    const se = d.session;
+    if (se && typeof se === 'object' && Array.isArray(se.qids) && se.qids.length > 0 &&
+        se.qids.length <= 1000 && se.qids.every((id) => DB.byId.has(id))) {
+      const validIds = new Set(se.qids);
+      const ans = {};
+      if (se.ans && typeof se.ans === 'object') {
+        for (const [id, value] of Object.entries(se.ans)) {
+          const questionId = Number.isNaN(Number(id)) ? id : Number(id);
+          if (validIds.has(questionId) && Number.isInteger(value) && value >= 0 && value <= 3) ans[questionId] = value;
+        }
+      }
+      out.session = {
+        id: String(se.id || uid()).slice(0, 64),
+        kind: String(se.kind || 'quick').slice(0, 20),
+        title: String(se.title || '').slice(0, 120),
+        qids: se.qids.slice(), ans,
+        idx: clamp(Number.isInteger(se.idx) ? se.idx : 0, 0, se.qids.length - 1),
+        spent: Math.max(0, num(se.spent)), t0: Math.max(0, num(se.t0)),
+        limit: Math.max(0, num(se.limit)), instant: !!se.instant,
+        lesson: Number.isInteger(se.lesson) ? se.lesson : null
+      };
+    }
     return out;
   }
   const ACT = {
@@ -918,6 +1105,7 @@
     else if (k === 'f') { const se = S.session; toggleMark(se.qids[se.idx]); }
   });
   document.addEventListener('visibilitychange', () => { if (document.hidden) save(); });
+  document.addEventListener('freeze', save);
   window.addEventListener('pagehide', save);
   window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); ui.installEvt = e; if (route().name === 'settings') render(true); });
   window.addEventListener('appinstalled', () => { ui.installEvt = null; });
@@ -926,6 +1114,8 @@
   async function boot() {
     applyLang(); applyTheme();
     app().innerHTML = `<div class="boot"><img src="icons/icon.svg" width="72" height="72" alt=""><p>${t('loading')}</p></div>`;
+    await restorePersistedState();
+    requestPersistentStorage();
     try {
       let j = window.QDATA;
       if (!j) {
@@ -940,11 +1130,32 @@
       app().innerHTML = `<div class="boot"><img src="icons/icon.svg" width="72" height="72" alt=""><p>${t('load_error')}</p></div>`;
       return;
     }
-    // drop stale references
+    // Drop stale or malformed references without allowing saved state to crash boot.
     S.marks = S.marks.filter((id) => DB.byId.has(id));
-    if (S.session && !S.session.qids.every((id) => DB.byId.has(id))) S.session = null;
-    try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) { /* ignore */ }
+    if (S.session) {
+      const se = S.session;
+      const validSession = Array.isArray(se.qids) && se.qids.length > 0 && se.qids.length <= 1000 &&
+        se.qids.every((id) => DB.byId.has(id)) && se.ans && typeof se.ans === 'object' && !Array.isArray(se.ans);
+      if (!validSession) {
+        S.session = null;
+        save();
+      } else {
+        const allowed = new Set(se.qids);
+        const answers = {};
+        for (const [key, value] of Object.entries(se.ans)) {
+          const id = Number.isNaN(Number(key)) ? key : Number(key);
+          if (allowed.has(id) && Number.isInteger(value) && value >= 0 && value <= 3) answers[id] = value;
+        }
+        se.ans = answers;
+        se.idx = clamp(Number.isInteger(se.idx) ? se.idx : 0, 0, se.qids.length - 1);
+        se.spent = Math.max(0, Number.isFinite(se.spent) ? se.spent : 0);
+        se.t0 = Math.max(0, Number.isFinite(se.t0) ? se.t0 : Date.now() - se.spent * 1000);
+        se.limit = Math.max(0, Number.isFinite(se.limit) ? se.limit : 0);
+      }
+    }
     render();
+    if (recoveredStorage) toast(t('storage_recovered'));
+    else if (!localStateValid) toast(t('storage_restore_unavailable'));
     if (!S.settings.hideIntro && route().name !== 'quiz') showIntro(0);
     if ('serviceWorker' in navigator && location.protocol !== 'file:') {
       navigator.serviceWorker.register('sw.js').catch(() => { /* offline support optional */ });

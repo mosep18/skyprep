@@ -12,4 +12,4 @@ Bilingual (FA/EN) aviation exam trainer PWA built from the CAO Written Exam book
 3. Open `https://<user>.github.io/<repo>/`.
 
 Local run: `python3 -m http.server` then open http://localhost:8000
-After changing files, bump `VERSION` in `sw.js` so installed apps update.
+After changing files, bump `VERSION` in `sw.js` so installed apps update. Version 1.0.6 adds IndexedDB recovery alongside localStorage, waits for recovery before rendering, and restores in-progress sessions from imported backups.
