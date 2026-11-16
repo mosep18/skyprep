@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>SkyPrep – Aviation exam trainer</title>
+  <meta name="description" content="SkyPrep: bilingual aviation exam trainer with booklet questions, negative marking and a personal progress panel.">
+  <meta name="theme-color" content="#2563eb">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/svg+xml" href="icons/icon.svg">
+  <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="SkyPrep">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="preload" href="fonts/vazirmatn-nl.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="css/app.css">
+  <script>
+    /* set language / theme before first paint to avoid a flash */
+    try {
+      var s = JSON.parse(localStorage.getItem('skyprep.v1') || '{}').settings || {};
+      var l = s.lang || ((navigator.language || 'fa').toLowerCase().indexOf('en') === 0 ? 'en' : 'fa');
+      document.documentElement.lang = l; document.documentElement.dir = l === 'fa' ? 'rtl' : 'ltr';
+      var th = s.theme || 'auto';
+      var dark = th === 'dark' || (th === 'auto' && window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches);
+      document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+    } catch (e) {}
+  </script>
+</head>
+<body>
+  <div id="app"></div>
+  <noscript>SkyPrep needs JavaScript. / برای اجرای برنامه جاوااسکریپت لازم است.</noscript>
+  <script src="data/questions.js"></script>
+  <script src="js/i18n.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
