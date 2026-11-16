@@ -2,7 +2,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '1.0.4';
+  const VERSION = '1.0.5';
   const LS_KEY = 'skyprep.v1';
   const TARGET = 75;               // target percentage shown on results
   const MOCK_DEFAULT = 100;
@@ -91,7 +91,13 @@
     return d;
   }
   let S = load();
-  function save() { try { localStorage.setItem(LS_KEY, JSON.stringify(S)); } catch (e) { /* storage unavailable */ } }
+  let warned = false;
+  function save() {
+    try { localStorage.setItem(LS_KEY, JSON.stringify(S)); }
+    catch (e) {
+      if (!warned && typeof toast === 'function') { warned = true; toast(t('save_fail')); }
+    }
+  }
 
   const ui = {
     sheet: null,            // current start-sheet config
@@ -937,6 +943,7 @@
     // drop stale references
     S.marks = S.marks.filter((id) => DB.byId.has(id));
     if (S.session && !S.session.qids.every((id) => DB.byId.has(id))) S.session = null;
+    try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) { /* ignore */ }
     render();
     if (!S.settings.hideIntro && route().name !== 'quiz') showIntro(0);
     if ('serviceWorker' in navigator && location.protocol !== 'file:') {
