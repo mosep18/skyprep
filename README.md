@@ -12,4 +12,11 @@ Bilingual (FA/EN) aviation exam trainer PWA built from the CAO Written Exam book
 3. Open `https://<user>.github.io/<repo>/`.
 
 Local run: `python3 -m http.server` then open http://localhost:8000
-After changing files, bump `VERSION` in `sw.js` so installed apps update. Version 1.0.6 adds IndexedDB recovery alongside localStorage, waits for recovery before rendering, and restores in-progress sessions from imported backups.
+After changing files, bump `VERSION` in `sw.js` so installed apps update.
+
+## v1.1.0
+- Per-lesson page (`#/lesson/<i>`): mastery, accuracy, time, progress chart, mistakes / skipped / unseen lists.
+- Spaced repetition + Daily Revision (due today / forgetting zone / lock-in), mastery per lesson, weak spots, readiness prediction, time stats.
+- "New" tag, "Not sure" button, livelier UI and animations.
+- Fixes: position-based progress bar; "practice this exam's mistakes" excludes skipped; a wrong question leaves the mistakes list after 2 correct answers.
+- Data-safe: same `skyprep.v1` key, additive migration only. Deploy to the same repo/URL.
